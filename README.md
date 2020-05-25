@@ -28,3 +28,88 @@ This project adheres to the Contributor Covenant code of conduct. By participati
 
 More info at:
 http://www.lynckia.com/licode
+
+
+
+## v8 tag uses supervisor for process management
+
+**安装supervisor**
+
+```shell
+$ apt-get install supervisor
+# 启动
+$ supervisord -c /etc/supervisord.conf
+```
+
+**为node建立软连接**
+
+```shell
+$ ln -s /opt/licode/build/libdeps/nvm/versions/node/v12.13.0/bin/node /usr/bin/node
+```
+
+**配置.conf文件**
+
+```shell
+$ cd /etc/supervisor/conf.d 
+$ vim licode.conf
+# 输入如下配置
+[program:nove]
+directory=/opt/licode/nuve/nuveAPI/
+command=node nuve.js
+stdout_logfile=/opt/log/licode/nove.log
+autostart=true
+autorestart=true
+startsecs=8
+stopasgroup=true
+ikillasgroup=true
+startretries=1
+redirect_stderr=true
+
+[program:erizo_controller]
+directory=/opt/licode/erizo_controller/erizoController/
+command=node erizoController.js
+stdout_logfile=/opt/log/licode/erizo_controller.log
+autostart=true
+autorestart=true
+startsecs=8
+stopasgroup=true
+ikillasgroup=true
+startretries=1
+redirect_stderr=true
+
+[program:erizo_agent]
+directory=/opt/licode/erizo_controller/erizoAgent/
+command=node erizoAgent.js
+stdout_logfile=/opt/log/licode/erizo_agent.log
+autostart=true
+autorestart=true
+startsecs=8
+stopasgroup=true
+ikillasgroup=true
+startretries=1
+redirect_stderr=true
+
+[program:basic_example]
+directory=/opt/licode/extras/basic_example/
+command=node basicServer.js
+stdout_logfile=/opt/log/licode/basic_example.log
+autostart=true
+autorestart=true
+startsecs=8
+stopasgroup=true
+ikillasgroup=true
+startretries=1
+redirect_stderr=true
+```
+
+**supervisor 命令使用**
+
+```shell
+$ supervisorctl status        //查看所有进程的状态
+$ supervisorctl stop es       //停止es
+$ supervisorctl start es      //启动es
+$ supervisorctl restart       //重启es
+$ supervisorctl update        //配置文件修改后使用该命令加载新的配置
+$ supervisorctl reload        //重新启动配置中的所有程序
+$ supervisorctl reread        //重新启动配置中的所有程序
+```
