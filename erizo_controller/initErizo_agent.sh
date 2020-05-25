@@ -12,6 +12,5 @@ NVM_CHECK="$LICODE_ROOT"/scripts/checkNvm.sh
 
 cd $ROOT/erizoAgent
 nvm use
-node erizoAgent.js $* &
 
 cd $CURRENT_DIR

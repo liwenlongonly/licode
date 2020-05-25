@@ -13,6 +13,4 @@ CURRENT_DIR=`pwd`
 
 cd $PATHNAME/nuveAPI
 
-node nuve.js &
-
 cd $CURRENT_DIR
