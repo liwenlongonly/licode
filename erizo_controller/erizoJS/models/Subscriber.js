@@ -38,7 +38,7 @@ class Subscriber extends NodeClass {
   }
 
   _onMediaStreamEvent(mediaStreamEvent) {
-    if (mediaStreamEvent.mediaStreamId !== this.streamId) {
+    if (mediaStreamEvent.mediaStreamId !== this.erizoStreamId) {
       return;
     }
     if (mediaStreamEvent.type === 'slideshow_fallback_update') {
@@ -88,7 +88,8 @@ class Subscriber extends NodeClass {
   }
 
   close(sendOffer = true) {
-    log.debug(`msg: Closing subscriber, streamId:${this.streamId}`);
+    log.debug(`message: Closing subscriber, streamId:${this.streamId}, `,
+      logger.objectToLog(this.options), logger.objectToLog(this.options.metadata));
     this.publisher = undefined;
     let promise = Promise.resolve();
     if (this.connection) {
