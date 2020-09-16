@@ -82,8 +82,6 @@ MediaStream::MediaStream(std::shared_ptr<Worker> worker,
   }
   ELOG_INFO("%s message: constructor, id: %s",
       toLog(), media_stream_id.c_str());
-  source_fb_sink_ = this;
-  sink_fb_source_ = this;
   stats_ = std::make_shared<Stats>();
   log_stats_ = std::make_shared<Stats>();
   quality_manager_ = std::make_shared<QualityManager>();
@@ -128,15 +126,15 @@ void MediaStream::setMaxVideoBW(uint32_t max_video_bw) {
 }
 
 void MediaStream::syncClose() {
-  ELOG_DEBUG("%s message:Close called", toLog());
+  ELOG_INFO("%s message:Close called", toLog());
   if (!sending_) {
     return;
   }
   sending_ = false;
   ready_ = false;
-  video_sink_ = nullptr;
-  audio_sink_ = nullptr;
-  fb_sink_ = nullptr;
+  video_sink_.reset();
+  audio_sink_.reset();
+  fb_sink_.reset();
   pipeline_initialized_ = false;
   pipeline_->close();
   pipeline_.reset();
@@ -152,7 +150,16 @@ boost::future<void> MediaStream::close() {
   });
 }
 
-bool MediaStream::init(bool doNotWaitForRemoteSdp) {
+void MediaStream::init() {
+  if (source_fb_sink_.expired()) {
+    source_fb_sink_ = std::dynamic_pointer_cast<FeedbackSink>(shared_from_this());
+  }
+  if (sink_fb_source_.expired()) {
+    sink_fb_source_ = std::dynamic_pointer_cast<FeedbackSource>(shared_from_this());
+  }
+}
+
+bool MediaStream::configure(bool doNotWaitForRemoteSdp) {
   if (doNotWaitForRemoteSdp) {
     ready_ = true;
   }
@@ -210,7 +217,6 @@ bool MediaStream::setRemoteSdp(std::shared_ptr<SdpInfo> sdp, int session_version
     pipeline_->notifyUpdate();
     return true;
   }
-
   bundle_ = remote_sdp_->isBundle;
   if (video_ssrc_list_it != remote_sdp_->video_ssrc_map.end()) {
     setVideoSourceSSRCList(video_ssrc_list_it->second);
@@ -257,6 +263,8 @@ void MediaStream::initializeStats() {
   log_stats_->getNode().insertStat("audioMuted", CumulativeStat{0});
   log_stats_->getNode().insertStat("audioNack", CumulativeStat{0});
   log_stats_->getNode().insertStat("audioRemb", CumulativeStat{0});
+  log_stats_->getNode().insertStat("audioSrTimestamp", CumulativeStat{0});
+  log_stats_->getNode().insertStat("audioSrNtp", CumulativeStat{0});
 
   log_stats_->getNode().insertStat("videoBitrate", CumulativeStat{0});
   log_stats_->getNode().insertStat("videoFL", CumulativeStat{0});
@@ -270,6 +278,8 @@ void MediaStream::initializeStats() {
   log_stats_->getNode().insertStat("videoRemb", CumulativeStat{0});
   log_stats_->getNode().insertStat("videoErizoRemb", CumulativeStat{0});
   log_stats_->getNode().insertStat("videoKeyFrames", CumulativeStat{0});
+  log_stats_->getNode().insertStat("videoSrTimestamp", CumulativeStat{0});
+  log_stats_->getNode().insertStat("videoSrNtp", CumulativeStat{0});
 
   log_stats_->getNode().insertStat("SL0TL0", CumulativeStat{0});
   log_stats_->getNode().insertStat("SL0TL1", CumulativeStat{0});
@@ -352,6 +362,8 @@ void MediaStream::printStats() {
     transferMediaStats("audioMuted",   audio_ssrc, "erizoAudioMute");
     transferMediaStats("audioNack",    audio_ssrc, "NACK");
     transferMediaStats("audioRemb",    audio_ssrc, "bandwidth");
+    transferMediaStats("audioSrTimestamp", audio_ssrc, "srTimestamp");
+    transferMediaStats("audioSrNtp", audio_ssrc, "srNtp");
   }
   if (video_enabled_) {
     video_ssrc = std::to_string(is_publisher_ ? getVideoSourceSSRC() : getVideoSinkSSRC());
@@ -367,6 +379,8 @@ void MediaStream::printStats() {
     transferMediaStats("videoRemb",    video_ssrc, "bandwidth");
     transferMediaStats("videoErizoRemb", video_ssrc, "erizoBandwidth");
     transferMediaStats("videoKeyFrames", video_ssrc, "keyFrames");
+    transferMediaStats("videoSrTimestamp", video_ssrc, "srTimestamp");
+    transferMediaStats("videoSrNtp", video_ssrc, "srNtp");
   }
 
   for (uint32_t spatial = 0; spatial <= 3; spatial++) {
@@ -485,7 +499,7 @@ int MediaStream::deliverEvent_(MediaEventPtr event) {
 }
 
 void MediaStream::onTransportData(std::shared_ptr<DataPacket> incoming_packet, Transport *transport) {
-  if ((audio_sink_ == nullptr && video_sink_ == nullptr && fb_sink_ == nullptr)) {
+  if (audio_sink_.expired() && video_sink_.expired() && fb_sink_.expired()) {
     return;
   }
 
@@ -529,6 +543,8 @@ void MediaStream::read(std::shared_ptr<DataPacket> packet) {
   RtpHeader *head = reinterpret_cast<RtpHeader*> (buf);
   RtcpHeader *chead = reinterpret_cast<RtcpHeader*> (buf);
   uint32_t recvSSRC = 0;
+  auto video_sink = video_sink_.lock();
+  auto audio_sink = audio_sink_.lock();
   if (!chead->isRtcp()) {
     recvSSRC = head->getSSRC();
   } else if (chead->packettype == RTCP_Sender_PT || chead->packettype == RTCP_SDES_PT) {  // Sender Report
@@ -536,46 +552,47 @@ void MediaStream::read(std::shared_ptr<DataPacket> packet) {
   }
   // DELIVER FEEDBACK (RR, FEEDBACK PACKETS)
   if (chead->isFeedback()) {
-    if (fb_sink_ != nullptr && should_send_feedback_) {
-      fb_sink_->deliverFeedback(std::move(packet));
+    auto fb_sink = fb_sink_.lock();
+    if (should_send_feedback_ && fb_sink) {
+      fb_sink->deliverFeedback(std::move(packet));
     }
   } else {
     // RTP or RTCP Sender Report
     if (bundle_) {
       // Check incoming SSRC
       // Deliver data
-      if (isVideoSourceSSRC(recvSSRC) && video_sink_) {
+      if (isVideoSourceSSRC(recvSSRC) && video_sink) {
         parseIncomingPayloadType(buf, len, VIDEO_PACKET);
         parseIncomingExtensionId(buf, len, VIDEO_PACKET);
-        video_sink_->deliverVideoData(std::move(packet));
-      } else if (isAudioSourceSSRC(recvSSRC) && audio_sink_) {
+        video_sink->deliverVideoData(std::move(packet));
+      } else if (isAudioSourceSSRC(recvSSRC) && audio_sink) {
         parseIncomingPayloadType(buf, len, AUDIO_PACKET);
         parseIncomingExtensionId(buf, len, AUDIO_PACKET);
-        audio_sink_->deliverAudioData(std::move(packet));
+        audio_sink->deliverAudioData(std::move(packet));
       } else {
         ELOG_DEBUG("%s read video unknownSSRC: %u, localVideoSSRC: %u, localAudioSSRC: %u",
                     toLog(), recvSSRC, this->getVideoSourceSSRC(), this->getAudioSourceSSRC());
       }
     } else {
-      if (packet->type == AUDIO_PACKET && audio_sink_) {
+      if (packet->type == AUDIO_PACKET && audio_sink) {
         parseIncomingPayloadType(buf, len, AUDIO_PACKET);
         parseIncomingExtensionId(buf, len, AUDIO_PACKET);
         // Firefox does not send SSRC in SDP
         if (getAudioSourceSSRC() == 0) {
           ELOG_DEBUG("%s discoveredAudioSourceSSRC:%u", toLog(), recvSSRC);
-          this->setAudioSourceSSRC(recvSSRC);
+          setAudioSourceSSRC(recvSSRC);
         }
-        audio_sink_->deliverAudioData(std::move(packet));
-      } else if (packet->type == VIDEO_PACKET && video_sink_) {
+        audio_sink->deliverAudioData(std::move(packet));
+      } else if (packet->type == VIDEO_PACKET && video_sink) {
         parseIncomingPayloadType(buf, len, VIDEO_PACKET);
         parseIncomingExtensionId(buf, len, VIDEO_PACKET);
         // Firefox does not send SSRC in SDP
         if (getVideoSourceSSRC() == 0) {
           ELOG_DEBUG("%s discoveredVideoSourceSSRC:%u", toLog(), recvSSRC);
-          this->setVideoSourceSSRC(recvSSRC);
+          setVideoSourceSSRC(recvSSRC);
         }
         // change ssrc for RTP packets, don't touch here if RTCP
-        video_sink_->deliverVideoData(std::move(packet));
+        video_sink->deliverVideoData(std::move(packet));
       }
     }  // if not bundle
   }  // if not Feedback
@@ -594,7 +611,9 @@ void MediaStream::notifyMediaStreamEvent(const std::string& type, const std::str
 }
 
 void MediaStream::notifyToEventSink(MediaEventPtr event) {
-  event_sink_->deliverEvent(std::move(event));
+  if (auto event_sink = event_sink_.lock()) {
+    event_sink->deliverEvent(std::move(event));
+  }
 }
 
 int MediaStream::sendPLI() {
@@ -611,9 +630,8 @@ int MediaStream::sendPLI() {
 }
 
 void MediaStream::sendPLIToFeedback() {
-  if (fb_sink_) {
-    fb_sink_->deliverFeedback(RtpUtils::createPLI(this->getVideoSinkSSRC(),
-      this->getVideoSourceSSRC()));
+  if (auto fb_sink = fb_sink_.lock()) {
+    fb_sink->deliverFeedback(RtpUtils::createPLI(getVideoSinkSSRC(), getVideoSourceSSRC()));
   }
 }
 
