@@ -11,7 +11,7 @@ let recording = false;
 let recordingId = '';
 const configFlags = {
   noStart: false, // disable start button when only subscribe
-  forceStart: false, // force start button in all cases
+  forceStart: true, // force start button in all cases
   screen: false, // screensharinug
   room: 'basicExampleRoom', // room name
   singlePC: false,
@@ -44,7 +44,6 @@ const fillInConfigFlagsFromParameters = (config) => {
 const testConnection = () => {
   window.location = '/connection_test.html';
 };
-
 
 // eslint-disable-next-line no-unused-vars
 function startRecording() {
@@ -85,6 +84,10 @@ const startBasicExample = () => {
   document.getElementById('slideShowMode').disabled = false;
   document.getElementById('startWarning').hidden = true;
   document.getElementById('startButton').hidden = true;
+  inputValue = document.getElementById('roomName').value;
+  if(inputValue){
+    configFlags.room = inputValue;
+  }
   recording = false;
   console.log('Selected Room', configFlags.room, 'of type', configFlags.type);
   const config = { audio: true,
@@ -215,7 +218,7 @@ const startBasicExample = () => {
 };
 
 window.onload = () => {
-  fillInConfigFlagsFromParameters(configFlags);
+  // fillInConfigFlagsFromParameters(configFlags);
   window.configFlags = configFlags;
 
   const shouldSkipButton =
